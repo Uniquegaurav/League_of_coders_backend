@@ -41,7 +41,7 @@ mongoose.set('useFindAndModify',false);
 
 const io = new Server(server,{
        cors: {
-              origin: "http://localhost:5000",
+              origin: "*",
               methods: ["GET", "POST"],
 
        }
