@@ -47,6 +47,7 @@ const io = new Server(server,{
 
        }
 });
+app.options('*', cors());
 io.on('connection',(socket) =>{
        console.log('We have a new Connection')
 
