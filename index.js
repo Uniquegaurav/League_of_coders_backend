@@ -40,8 +40,13 @@ mongoose.connect(process.env.CONNECTION_URL ,{useNewUrlParser : true ,useUnified
     
 mongoose.set('useFindAndModify',false);
 
-const io = new Server(server,cors());
-io.options('*', cors());
+const io = new Server(server,{
+       cors: {
+              origin: "*",
+              methods: ["GET", "POST"],
+
+       }
+});
 io.on('connection',(socket) =>{
        console.log('We have a new Connection')
 
