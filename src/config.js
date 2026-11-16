@@ -6,7 +6,12 @@ dotenv.config();
 const DEFAULT_GOOGLE_CLIENT_ID = '146423725963-28dc9pj5sbjj12d44lbtlnimqltcmkrb.apps.googleusercontent.com';
 
 // Always allow the live site and local dev, even if CLIENT_ORIGIN was set to something else.
-const ALWAYS_ALLOWED = ['https://codersleague.netlify.app', 'http://localhost:5173', 'http://127.0.0.1:5173'];
+const ALWAYS_ALLOWED = [
+  'https://codersleague.netlify.app',
+  'https://codersleague.mysummit.space',
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+];
 
 function corsOrigin() {
   const fromEnv = (process.env.CLIENT_ORIGIN || '')
