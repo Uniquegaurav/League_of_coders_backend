@@ -2,10 +2,20 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-const origins = (process.env.CLIENT_ORIGIN || '*')
-  .split(',')
-  .map((o) => o.trim())
-  .filter(Boolean);
+// Public OAuth client id (it ships in the frontend). Override with GOOGLE_CLIENT_ID if you rotate it.
+const DEFAULT_GOOGLE_CLIENT_ID = '146423725963-28dc9pj5sbjj12d44lbtlnimqltcmkrb.apps.googleusercontent.com';
+
+// Always allow the live site and local dev, even if CLIENT_ORIGIN was set to something else.
+const ALWAYS_ALLOWED = ['https://codersleague.netlify.app', 'http://localhost:5173', 'http://127.0.0.1:5173'];
+
+function corsOrigin() {
+  const fromEnv = (process.env.CLIENT_ORIGIN || '')
+    .split(',')
+    .map((o) => o.trim().replace(/\/$/, ''))
+    .filter(Boolean);
+  if (fromEnv.includes('*') || fromEnv.length === 0) return true;
+  return [...new Set([...ALWAYS_ALLOWED, ...fromEnv])];
+}
 
 if (!process.env.JWT_SECRET) {
   console.warn('[config] JWT_SECRET is not set; using an insecure development secret.');
@@ -16,8 +26,8 @@ export const config = {
   mongoUrl: process.env.CONNECTION_URL,
   jwtSecret: process.env.JWT_SECRET || 'dev-only-insecure-secret',
   jwtExpiresIn: '14d',
-  corsOrigin: origins.includes('*') ? true : origins,
-  googleClientId: process.env.GOOGLE_CLIENT_ID || '',
+  corsOrigin: corsOrigin(),
+  googleClientId: process.env.GOOGLE_CLIENT_ID || DEFAULT_GOOGLE_CLIENT_ID,
   pollIntervalMs: (Number(process.env.POLL_INTERVAL_SEC) || 20) * 1000,
 };
 
