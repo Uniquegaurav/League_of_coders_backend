@@ -24,9 +24,17 @@ router.get(
       const term = search.trim().slice(0, 80);
       filter.$and = [{ $or: [{ title: { $regex: escapeRegex(term), $options: 'i' } }, { frontendId: term }] }];
     }
-    if (req.query.hideSolved === 'true' && req.userId) {
+    if (req.userId && (req.query.onlySolved === 'true' || req.query.hideSolved === 'true')) {
       const user = await User.findById(req.userId).select('solvedSlugs').lean();
-      if (user?.solvedSlugs?.length) filter.slug = { $nin: user.solvedSlugs };
+      const slugs = user?.solvedSlugs || [];
+      if (req.query.onlySolved === 'true') {
+        if (!slugs.length) return res.json({ total: 0, page, limit, problems: [] });
+        filter.slug = { $in: slugs };
+      } else if (slugs.length) {
+        filter.slug = { $nin: slugs };
+      }
+    } else if (req.query.onlySolved === 'true') {
+      return res.json({ total: 0, page, limit, problems: [] });
     }
 
     const [total, problems] = await Promise.all([

@@ -10,7 +10,7 @@ export async function fetchProfile(username, { fresh = false } = {}) {
   if (!fresh && hit && Date.now() - hit.at < TTL_MS) return hit.profile;
   const profile = await fetchUserProfile(username).catch((err) => {
     console.warn('[leetcode] profile lookup failed:', err.message);
-    throw new HttpError(502, "Couldn't reach LeetCode right now — please try again in a moment");
+    throw new HttpError(502, "Couldn't reach LeetCode right now. Please try again in a moment.");
   });
   cache.set(key, { profile, at: Date.now() });
   return profile;

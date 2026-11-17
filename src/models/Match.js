@@ -74,6 +74,7 @@ const matchSchema = new mongoose.Schema(
       pool: { type: String, enum: ['curated', 'all'], default: 'curated' },
       topics: { type: [String], default: [] },
       maxPlayers: { type: Number, default: 8 },
+      solo: { type: Boolean, default: false },
     },
     participants: { type: [participantSchema], default: [] },
     problems: { type: [problemSchema], default: [] },

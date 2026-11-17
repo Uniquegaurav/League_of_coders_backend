@@ -148,19 +148,34 @@ async function mutate(code, fn) {
 // ---------------------------------------------------------------------------
 // Settings
 // ---------------------------------------------------------------------------
+// Minutes granted per problem in a solo test. Keep in sync with src/lib/soloTime.js on the frontend.
+export const SOLO_MINUTES = { easy: 10, medium: 20, hard: 35 };
+
+export function soloDurationMin({ easy = 0, medium = 0, hard = 0 }) {
+  const raw = easy * SOLO_MINUTES.easy + medium * SOLO_MINUTES.medium + hard * SOLO_MINUTES.hard;
+  return clampInt(raw, MATCH_LIMITS.minDuration, MATCH_LIMITS.maxDuration, MATCH_LIMITS.minDuration);
+}
+
 export function normalizeSettings(input = {}, prev = {}) {
   const pick = (key, fallback) => (input[key] !== undefined ? input[key] : prev[key] ?? fallback);
+  const solo = pick('solo', false) === true;
+  const easy = clampInt(pick('easy', 1), 0, MATCH_LIMITS.maxPerDifficulty, 1);
+  const medium = clampInt(pick('medium', 2), 0, MATCH_LIMITS.maxPerDifficulty, 2);
+  const hard = clampInt(pick('hard', 0), 0, MATCH_LIMITS.maxPerDifficulty, 0);
   const settings = {
-    durationMin: clampInt(pick('durationMin', 45), MATCH_LIMITS.minDuration, MATCH_LIMITS.maxDuration, 45),
-    easy: clampInt(pick('easy', 1), 0, MATCH_LIMITS.maxPerDifficulty, 1),
-    medium: clampInt(pick('medium', 2), 0, MATCH_LIMITS.maxPerDifficulty, 2),
-    hard: clampInt(pick('hard', 0), 0, MATCH_LIMITS.maxPerDifficulty, 0),
+    durationMin: solo
+      ? soloDurationMin({ easy, medium, hard })
+      : clampInt(pick('durationMin', 45), MATCH_LIMITS.minDuration, MATCH_LIMITS.maxDuration, 45),
+    easy,
+    medium,
+    hard,
     pool: pick('pool', 'curated') === 'all' ? 'all' : 'curated',
     topics: (Array.isArray(pick('topics', [])) ? pick('topics', []) : [])
       .filter((t) => typeof t === 'string' && t.trim())
       .map((t) => t.trim().slice(0, 50))
       .slice(0, 12),
-    maxPlayers: clampInt(pick('maxPlayers', 8), 2, MATCH_LIMITS.maxPlayers, 8),
+    maxPlayers: solo ? 1 : clampInt(pick('maxPlayers', 8), 2, MATCH_LIMITS.maxPlayers, 8),
+    solo,
   };
   const total = settings.easy + settings.medium + settings.hard;
   if (total < 1) throw badRequest('Pick at least one problem');
@@ -178,7 +193,7 @@ const participantFrom = (user) => ({
 
 const requireLeetCode = (user) => {
   if (!user.leetcode?.username) {
-    throw badRequest('Link your LeetCode username in your profile first — it is how solves are verified.');
+    throw badRequest('Link your LeetCode username in your profile first. That is how solves are verified.');
   }
 };
 
@@ -204,9 +219,9 @@ export async function createMatch(user, input = {}) {
 
   const match = await Match.create({
     code,
-    name: (input.name || `${user.name.split(' ')[0]}'s battle`).toString().trim().slice(0, 60),
+    name: (input.name || `${user.name.split(' ')[0]}'s ${settings.solo ? 'test' : 'battle'}`).toString().trim().slice(0, 60),
     host: user._id,
-    visibility: input.visibility === 'private' ? 'private' : 'public',
+    visibility: settings.solo || input.visibility === 'private' ? 'private' : 'public',
     settings,
     participants: [participantFrom(user)],
     messages: [{ kind: 'system', text: `${user.name} created the lobby` }],
@@ -224,7 +239,7 @@ export function joinMatch(code, user) {
       say(`${user.name} is back`);
       return match;
     }
-    if (match.status !== 'lobby') throw badRequest('This match has already started — you can still spectate.');
+    if (match.status !== 'lobby') throw badRequest('This match has already started. You can still spectate.');
     requireLeetCode(user);
     if (activeParticipants(match).length >= match.settings.maxPlayers) throw badRequest('Lobby is full');
     match.participants.push(participantFrom(user));
@@ -282,7 +297,8 @@ export function updateSettings(code, userId, input) {
     if (match.status !== 'lobby') throw badRequest('Settings are locked once the match starts');
     match.settings = normalizeSettings(input.settings || input, match.settings.toObject());
     if (input.name !== undefined) match.name = String(input.name).trim().slice(0, 60) || match.name;
-    if (input.visibility) match.visibility = input.visibility === 'private' ? 'private' : 'public';
+    if (match.settings.solo) match.visibility = 'private';
+    else if (input.visibility) match.visibility = input.visibility === 'private' ? 'private' : 'public';
     if (match.participants.length > match.settings.maxPlayers) {
       throw badRequest(`There are already ${match.participants.length} players in the lobby`);
     }
@@ -393,7 +409,7 @@ function goLive(code) {
   return mutate(code, (match, say) => {
     if (match.status !== 'countdown') return match;
     match.status = 'live';
-    say('Match is live — good luck!');
+    say('Match is live. Good luck.');
     return match;
   });
 }
@@ -480,7 +496,7 @@ export async function checkNow(code, userId) {
   const key = `${code}:${userId}`;
   const last = lastManualCheck.get(key) || 0;
   const wait = MATCH_LIMITS.verifyCooldownMs - (Date.now() - last);
-  if (wait > 0) throw badRequest(`Checked a moment ago — try again in ${Math.ceil(wait / 1000)}s`);
+  if (wait > 0) throw badRequest(`Checked a moment ago. Try again in ${Math.ceil(wait / 1000)}s`);
   lastManualCheck.set(key, Date.now());
   const match = await Match.findOne({ code }).select('participants status').lean();
   if (!match) throw notFound('Match not found');
