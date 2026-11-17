@@ -112,7 +112,7 @@ export async function selectProblems(settings, excludeSlugs = new Set()) {
     }
     if (chosen.length < count) {
       throw badRequest(
-        `Only ${candidates.length} ${difficulty} problem(s) match these settings — lower the count or widen the topics.`
+        `Only ${candidates.length} ${difficulty} problem(s) match these settings. Lower the count or widen the topics.`
       );
     }
     picked.push(
