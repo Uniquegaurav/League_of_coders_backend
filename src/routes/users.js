@@ -3,6 +3,9 @@ import mongoose from 'mongoose';
 import { randomBytes } from 'node:crypto';
 import User from '../models/User.js';
 import Match from '../models/Match.js';
+import Problem from '../models/Problem.js';
+import { XP, bumpStreak, practiceView, todayKey } from '../services/progression.js';
+import { dailySlug } from '../services/daily.js';
 import { requireAuth } from '../middleware/auth.js';
 import { asyncHandler, badRequest, clampInt, conflict, notFound } from '../utils/http.js';
 import { fetchProfile } from '../services/leetcodeProfile.js';
@@ -103,9 +106,67 @@ router.put(
   '/me/solved/:slug',
   requireAuth,
   asyncHandler(async (req, res) => {
-    const op = req.body?.solved === false ? '$pull' : '$addToSet';
-    await User.updateOne({ _id: req.userId }, { [op]: { solvedSlugs: req.params.slug } });
-    res.json({ slug: req.params.slug, solved: op === '$addToSet' });
+    const slug = req.params.slug;
+    const solved = req.body?.solved !== false;
+    const user = await me(req);
+    const before = practiceView(user);
+    const has = user.solvedSlugs.includes(slug);
+    let xpGained = 0;
+    let daily = false;
+
+    if (solved !== has) {
+      const problem = await Problem.findOne({ slug }).select('difficulty').lean();
+      const base = XP[problem?.difficulty] ?? XP.Easy;
+      if (!user.practice) user.practice = {};
+      if (solved) {
+        user.solvedSlugs.push(slug);
+        const today = todayKey();
+        daily = user.practice.dailyDay !== today && slug === (await dailySlug(today));
+        if (daily) user.practice.dailyDay = today;
+        xpGained = daily ? base * 2 : base;
+        bumpStreak(user);
+      } else {
+        user.solvedSlugs.pull(slug);
+        xpGained = -Math.min(base, user.practice.xp || 0);
+      }
+      user.practice.xp = (user.practice.xp || 0) + xpGained;
+      await user.save();
+    }
+
+    const practice = practiceView(user);
+    res.json({ slug, solved, xpGained, daily, leveledUp: practice.level > before.level, practice });
+  })
+);
+
+router.get(
+  '/me/progress',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const user = await User.findById(req.userId).select('solvedSlugs').lean();
+    const solvedSlugs = user?.solvedSlugs || [];
+    const base = { curated: true, paidOnly: false };
+    const solvedExpr = { $cond: [{ $in: ['$slug', solvedSlugs] }, 1, 0] };
+
+    const [diff, topics] = await Promise.all([
+      Problem.aggregate([
+        { $match: base },
+        { $group: { _id: '$difficulty', total: { $sum: 1 }, solved: { $sum: solvedExpr } } },
+      ]),
+      Problem.aggregate([
+        { $match: base },
+        { $project: { slug: 1, topic: { $cond: [{ $gt: [{ $size: '$tags' }, 0] }, '$tags', '$patterns'] } } },
+        { $unwind: '$topic' },
+        { $group: { _id: '$topic', total: { $sum: 1 }, solved: { $sum: solvedExpr } } },
+        { $sort: { total: -1, _id: 1 } },
+        { $limit: 12 },
+      ]),
+    ]);
+
+    const byDifficulty = { Easy: { solved: 0, total: 0 }, Medium: { solved: 0, total: 0 }, Hard: { solved: 0, total: 0 } };
+    diff.forEach((d) => {
+      if (byDifficulty[d._id]) byDifficulty[d._id] = { solved: d.solved, total: d.total };
+    });
+    res.json({ byDifficulty, topics: topics.map((t) => ({ topic: t._id, solved: t.solved, total: t.total })) });
   })
 );
 

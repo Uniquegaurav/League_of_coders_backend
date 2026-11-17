@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { practiceView } from '../services/progression.js';
 
 const userSchema = new mongoose.Schema(
   {
@@ -23,6 +24,14 @@ const userSchema = new mongoose.Schema(
     },
     // Problems solved on this platform (matches + practice marks); powers the "exclude solved" filter.
     solvedSlugs: { type: [String], default: [] },
+    practice: {
+      xp: { type: Number, default: 0 },
+      streak: { type: Number, default: 0 },
+      bestStreak: { type: Number, default: 0 },
+      lastActiveDay: { type: String },
+      dailyDay: { type: String },
+    },
+    friends: { type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }], default: [] },
   },
   { timestamps: true }
 );
@@ -42,6 +51,7 @@ userSchema.methods.toPublic = function toPublic() {
       ? { username: this.leetcode.displayName || this.leetcode.username, verified: !!this.leetcode.verified }
       : null,
     stats: this.stats,
+    practice: practiceView(this),
     createdAt: this.createdAt,
   };
 };
