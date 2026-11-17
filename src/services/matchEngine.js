@@ -5,6 +5,7 @@ import { badRequest, conflict, forbidden, notFound, clampInt } from '../utils/ht
 import { roomCode } from '../utils/random.js';
 import { fetchRecentAccepted } from './leetcode.js';
 import { selectProblems } from './questionBank.js';
+import { MATCH_XP, bumpStreak } from './progression.js';
 import { assignRanks, compareStanding, ratingChanges, recomputeScores } from './scoring.js';
 
 let io = null;
@@ -578,6 +579,25 @@ async function afterFinish(match) {
         },
       },
     }))
+  );
+
+  awardMatchXp(match, rated).catch((err) => console.error('Match XP award failed', err));
+}
+
+/** Practice XP and streaks for battle play. Best effort: never blocks or fails a finish. */
+async function awardMatchXp(match, rated) {
+  const users = await User.find({ _id: { $in: match.participants.map((p) => p.user) } });
+  const byId = new Map(users.map((u) => [String(u._id), u]));
+  await Promise.all(
+    match.participants.map(async (p) => {
+      const user = byId.get(String(p.user));
+      if (!user || !p.solves.length) return;
+      const won = rated && p.rank === 1 && p.score > 0;
+      if (!user.practice) user.practice = {};
+      user.practice.xp = (user.practice.xp || 0) + p.solves.length * MATCH_XP.perSolve + (won ? MATCH_XP.win : 0);
+      bumpStreak(user);
+      await user.save();
+    })
   );
 }
 

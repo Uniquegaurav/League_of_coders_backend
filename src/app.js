@@ -7,6 +7,7 @@ import userRoutes from './routes/users.js';
 import problemRoutes from './routes/problems.js';
 import matchRoutes from './routes/matches.js';
 import postRoutes from './routes/posts.js';
+import friendRoutes from './routes/friends.js';
 
 export function createApp() {
   const app = express();
@@ -22,6 +23,7 @@ export function createApp() {
   app.use('/api/problems', problemRoutes);
   app.use('/api/matches', matchRoutes);
   app.use('/api/posts', postRoutes);
+  app.use('/api/friends', friendRoutes);
 
   app.use((_req, res) => res.status(404).json({ message: 'Route not found' }));
 

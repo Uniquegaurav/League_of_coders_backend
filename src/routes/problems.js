@@ -2,7 +2,9 @@ import { Router } from 'express';
 import Problem from '../models/Problem.js';
 import User from '../models/User.js';
 import { optionalAuth } from '../middleware/auth.js';
-import { asyncHandler, clampInt } from '../utils/http.js';
+import { asyncHandler, clampInt, notFound } from '../utils/http.js';
+import { dailySlug } from '../services/daily.js';
+import { todayKey } from '../services/progression.js';
 import { getProblemDetail, listTopics } from '../services/questionBank.js';
 
 const router = Router();
@@ -54,6 +56,23 @@ router.get(
   '/topics',
   asyncHandler(async (req, res) => {
     res.json({ topics: await listTopics(req.query.pool === 'all' ? 'all' : 'curated') });
+  })
+);
+
+router.get(
+  '/daily',
+  optionalAuth,
+  asyncHandler(async (req, res) => {
+    const day = todayKey();
+    const slug = await dailySlug(day);
+    const problem = slug && (await Problem.findOne({ slug }).select('-detail'));
+    if (!problem) throw notFound('No daily problem available');
+    let done = false;
+    if (req.userId) {
+      const user = await User.findById(req.userId).select('practice.dailyDay solvedSlugs').lean();
+      done = user?.practice?.dailyDay === day;
+    }
+    res.json({ day, problem: problem.toSummary(), done });
   })
 );
 
