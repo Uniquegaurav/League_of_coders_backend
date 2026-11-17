@@ -41,7 +41,7 @@ const claimExpired = (claim) => !claim?.createdAt || Date.now() - new Date(claim
 const verifiedOwnerOf = (username, exceptId) =>
   User.exists({ 'leetcode.username': username, 'leetcode.verified': true, _id: { $ne: exceptId } });
 
-// Step 1: start a claim. Nothing is linked yet; the player gets a code to put in their LeetCode profile summary.
+// Step 1: start a claim. Nothing is linked yet; the player gets a code to put in their LeetCode profile ReadMe.
 router.put(
   '/me/leetcode',
   requireAuth,
@@ -74,7 +74,7 @@ router.put(
   })
 );
 
-// Step 2: prove ownership. The code must appear in the LeetCode profile summary (only the owner can edit it).
+// Step 2: prove ownership. The code must appear in the LeetCode profile ReadMe, formerly "Summary" (only the owner can edit it).
 router.post(
   '/me/leetcode/verify',
   requireAuth,
@@ -88,7 +88,7 @@ router.post(
       if (user.leetcode.verified) return res.json({ user: user.toSelf() });
       const legacy = await fetchProfile(user.leetcode.username, { fresh: true });
       if (!legacy?.aboutMe?.includes(user.leetcode.verifyToken)) {
-        throw badRequest(`Couldn't find "${user.leetcode.verifyToken}" in your LeetCode profile summary yet. Save it there and try again.`);
+        throw badRequest(`Couldn't find "${user.leetcode.verifyToken}" in your LeetCode ReadMe yet. In LeetCode profile settings, open ReadMe under General, add the code (or append it) and save, then try again.`);
       }
       user.leetcode.verified = true;
       user.leetcode.verifyToken = undefined;
@@ -105,7 +105,7 @@ router.post(
     const profile = await fetchProfile(claim.username, { fresh: true });
     if (!profile) throw badRequest(`No LeetCode user named "${claim.displayName || claim.username}"`);
     if (!profile.aboutMe?.includes(claim.token)) {
-      throw badRequest(`Couldn't find "${claim.token}" in that account's profile summary yet. Save it on LeetCode and try again (it can take a minute to update).`);
+      throw badRequest(`Couldn't find "${claim.token}" in that account's LeetCode ReadMe yet. In LeetCode profile settings, open ReadMe under General, add the code (or append it) and save, then try again. It can take a minute to update.`);
     }
     if (await verifiedOwnerOf(claim.username, user._id)) {
       throw conflict('This LeetCode account is already verified by another player');
