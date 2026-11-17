@@ -194,7 +194,10 @@ const participantFrom = (user) => ({
 
 const requireLeetCode = (user) => {
   if (!user.leetcode?.username) {
-    throw badRequest('Link your LeetCode username in your profile first. That is how solves are verified.');
+    throw badRequest('Link your LeetCode account in your profile first. That is how solves are verified.');
+  }
+  if (!user.leetcode.verified) {
+    throw badRequest('Verify your LeetCode account in your profile before competing. It proves the solves are yours.');
   }
 };
 

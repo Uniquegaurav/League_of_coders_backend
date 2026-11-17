@@ -1,6 +1,8 @@
 import mongoose from 'mongoose';
 import { practiceView } from '../services/progression.js';
 
+export const CLAIM_TTL_MS = 24 * 60 * 60 * 1000;
+
 const userSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true, maxlength: 60 },
@@ -14,6 +16,14 @@ const userSchema = new mongoose.Schema(
       avatar: { type: String },
       verified: { type: Boolean, default: false },
       verifyToken: { type: String },
+    },
+    // A LeetCode account the player is trying to link. It only becomes `leetcode` once ownership is proven.
+    leetcodeClaim: {
+      username: { type: String, lowercase: true, trim: true },
+      displayName: { type: String },
+      avatar: { type: String },
+      token: { type: String },
+      createdAt: { type: Date },
     },
     stats: {
       rating: { type: Number, default: 1200 },
@@ -61,6 +71,13 @@ userSchema.methods.toSelf = function toSelf() {
     ...this.toPublic(),
     email: this.email,
     leetcodeVerifyToken: this.leetcode?.verified ? null : this.leetcode?.verifyToken || null,
+    leetcodeClaim: this.leetcodeClaim?.username
+      ? {
+          username: this.leetcodeClaim.displayName || this.leetcodeClaim.username,
+          token: this.leetcodeClaim.token,
+          expiresAt: new Date(new Date(this.leetcodeClaim.createdAt).getTime() + CLAIM_TTL_MS),
+        }
+      : null,
     solvedCount: this.solvedSlugs.length,
   };
 };

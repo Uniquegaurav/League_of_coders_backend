@@ -1,4 +1,5 @@
-const ENDPOINT = 'https://leetcode.com/graphql';
+// Overridable so tests can point at a stand-in server.
+const ENDPOINT = process.env.LEETCODE_GRAPHQL_URL || 'https://leetcode.com/graphql';
 const TIMEOUT_MS = 15000;
 
 async function gql(query, variables = {}) {
