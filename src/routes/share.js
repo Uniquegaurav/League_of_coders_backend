@@ -106,7 +106,7 @@ router.get(
   '/share/u/:handle',
   asyncHandler(async (req, res) => {
     const user = await findByHandle(req.params.handle);
-    if (!user) return fallback(req, res, '/league');
+    if (!user) return fallback(req, res, '/tournaments');
     const handle = user.username || String(user._id);
     const s = user.stats;
     const title = `${user.name} on League of Coders`;
@@ -232,7 +232,8 @@ router.get(
       .lean();
     const urls = [
       { loc: '/', priority: '1.0', changefreq: 'daily' },
-      { loc: '/league', priority: '0.8', changefreq: 'daily' },
+      { loc: '/tournaments', priority: '0.8', changefreq: 'daily' },
+      { loc: '/leaderboard', priority: '0.7', changefreq: 'daily' },
       { loc: '/practice', priority: '0.6', changefreq: 'weekly' },
       ...SEO_PAGES.map((loc) => ({ loc, priority: '0.8', changefreq: 'monthly' })),
       ...players.map((p) => ({ loc: `/u/${p.username}`, lastmod: p.updatedAt, priority: '0.5', changefreq: 'weekly' })),

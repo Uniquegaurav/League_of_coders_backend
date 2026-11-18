@@ -74,11 +74,13 @@ export function assignRanks(participants) {
 /**
  * Multiplayer Elo: every pair of players is treated as a head-to-head game decided by final rank,
  * and the per-pair K factor is divided by (n - 1) so a match moves rating about as much as one 1v1.
+ * Each player may carry their own K (`players[i].k`), so newcomers settle quickly and veterans stay stable.
  */
 export function ratingChanges(players, k = 40) {
   const n = players.length;
   if (n < 2) return players.map(() => 0);
   return players.map((a, i) => {
+    const ka = a.k ?? k; // per-player K (see progression.kFactor)
     let delta = 0;
     players.forEach((b, j) => {
       if (i === j) return;
@@ -86,6 +88,6 @@ export function ratingChanges(players, k = 40) {
       const actual = a.rank < b.rank ? 1 : a.rank === b.rank ? 0.5 : 0;
       delta += actual - expected;
     });
-    return Math.round((k / (n - 1)) * delta);
+    return Math.round((ka / (n - 1)) * delta);
   });
 }

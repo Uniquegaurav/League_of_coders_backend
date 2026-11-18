@@ -28,6 +28,7 @@ const participantSchema = new mongoose.Schema(
     rank: Number,
     ratingBefore: Number,
     ratingAfter: Number,
+    xp: Number, // XP earned from this battle
   },
   { _id: false }
 );
@@ -99,6 +100,8 @@ const matchSchema = new mongoose.Schema(
     endsAt: Date,
     finishedAt: Date,
     rematchCode: String,
+    // Set when the match finishes: true only for official tournaments with 2+ players (they move rating).
+    rated: Boolean,
   },
   { timestamps: true }
 );

@@ -113,47 +113,51 @@ export function weekStart(now = Date.now()) {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - day));
 }
 
-/** Monday recap of last week's battles for players who played at least one. */
+/** Monday recap of last week's XP (and rating, if a tournament moved it) for players who earned any. */
 async function weeklyRecaps(now = Date.now()) {
   const d = new Date(now);
   if (d.getUTCDay() !== 1 || d.getUTCHours() < 4) return;
   const key = weekKey(now);
+  const lastWeek = weekKey(now - 7 * 86400000);
   const end = weekStart(now);
   const start = new Date(end.getTime() - 7 * 86400000);
+  const users = await User.find({
+    $or: [
+      { 'practice.weekKey': lastWeek, 'practice.weekXp': { $gt: 0 } },
+      { 'practice.prevWeekKey': lastWeek, 'practice.prevWeekXp': { $gt: 0 } },
+    ],
+    'emailPrefs.weekly': { $ne: false },
+    'lastEmails.weeklyKey': { $ne: key },
+    bot: { $ne: true },
+  }).limit(50);
+  if (!users.length) return;
   const rows = await Match.aggregate([
-    { $match: { status: 'finished', finishedAt: { $gte: start, $lt: end } } },
+    { $match: { status: 'finished', finishedAt: { $gte: start, $lt: end }, 'participants.user': { $in: users.map((u) => u._id) } } },
     { $unwind: '$participants' },
     {
       $group: {
         _id: '$participants.user',
         battles: { $sum: 1 },
-        solved: { $sum: { $size: '$participants.solves' } },
         gain: { $sum: { $subtract: [{ $ifNull: ['$participants.ratingAfter', 0] }, { $ifNull: ['$participants.ratingBefore', 0] }] } },
       },
     },
-    { $limit: 2000 },
   ]);
   const byId = new Map(rows.map((r) => [String(r._id), r]));
-  const users = await User.find({
-    _id: { $in: rows.map((r) => r._id) },
-    'emailPrefs.weekly': { $ne: false },
-    'lastEmails.weeklyKey': { $ne: key },
-  }).limit(50);
   for (const user of users) {
     if (capReached()) return;
-    const r = byId.get(String(user._id));
+    const p = user.practice || {};
+    const xp = p.weekKey === lastWeek ? p.weekXp : p.prevWeekXp;
+    const r = byId.get(String(user._id)) || { battles: 0, gain: 0 };
     const marked = await User.updateOne({ _id: user._id }, { $set: { 'lastEmails.weeklyKey': key } }).catch(() => null);
-    if (!marked || !r) continue;
-    const gain = r.gain > 0 ? `+${r.gain}` : String(r.gain);
+    if (!marked) continue;
+    const lines = [`You earned ${xp} XP${r.battles ? ` across ${r.battles} battle${r.battles === 1 ? '' : 's'}` : ''}.`];
+    if (r.gain) lines.push(`Tournament rating: ${r.gain > 0 ? '+' : ''}${r.gain}, now ${user.stats.rating}.`);
+    lines.push('The weekly XP board reset this morning, so everyone starts level.');
     await sendEmail(user, 'weekly', {
-      subject: `Your week: ${r.battles} battle${r.battles === 1 ? '' : 's'}, rating ${gain}`,
+      subject: `Your week: ${xp} XP`,
       heading: 'Your week on League of Coders',
-      lines: [
-        `You played ${r.battles} battle${r.battles === 1 ? '' : 's'} and solved ${r.solved} problem${r.solved === 1 ? '' : 's'}.`,
-        `Rating change: ${gain}. You are now at ${user.stats.rating}.`,
-        'The weekly leaderboard reset this morning, so everyone starts level.',
-      ],
-      cta: { label: 'See this week’s leaderboard', url: `${config.appUrl}/league?tab=week` },
+      lines,
+      cta: { label: 'See this week’s board', url: `${config.appUrl}/leaderboard?board=xp&period=week` },
     }).catch((err) => console.warn('[email] weekly', err.message));
   }
 }

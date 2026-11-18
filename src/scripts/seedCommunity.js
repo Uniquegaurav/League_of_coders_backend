@@ -14,6 +14,7 @@ import Match from '../models/Match.js';
 import Problem from '../models/Problem.js';
 import ScheduledEvent from '../models/ScheduledEvent.js';
 import { grantBadges } from '../services/badges.js';
+import { battleXp, weekKeyOf } from '../services/progression.js';
 import { assignRanks, recomputeScores } from '../services/scoring.js';
 import { SCORING } from '../config.js';
 import { roomCode } from '../utils/random.js';
@@ -263,8 +264,13 @@ async function finishedMatch({ name, bots, mix, durationMin, finishedAt, event }
   recomputeScores(match);
   assignRanks(match.participants);
   const n = match.participants.length;
+  const diff = new Map(problems.map((p) => [p.slug, p.difficulty]));
+  // Only tournaments move rating; every battle earns XP (same rules as the live game).
+  match.rated = !!event;
   match.participants.forEach((p) => {
-    p.ratingAfter = p.ratingBefore + Math.round(((n + 1) / 2 - p.rank) * 6);
+    if (event) p.ratingAfter = p.ratingBefore + Math.round(((n + 1) / 2 - p.rank) * 6);
+    else p.ratingBefore = undefined;
+    p.xp = battleXp({ solves: p.solves, difficultyOf: (slug) => diff.get(slug), rank: p.rank, score: p.score, players: n, tournament: !!event });
   });
   match.createdAt = startedAt;
   await match.save({ timestamps: false });
@@ -292,13 +298,15 @@ async function add() {
       email: `${username}@demo.invalid`,
       bot: true,
       emailPrefs: { streak: false, challenges: false, weekly: false },
-      stats: { rating, matches, wins, points: matches * rand(250, 520), solved: rand(matches, matches * 2) },
+      stats: { rating, matches, wins, points: matches * rand(250, 520), solved: rand(matches, matches * 2), ratedEvents: rand(3, 25) },
       solvedSlugs: sample(curated, Math.min(curated.length, rand(15, 110))),
       practice: {
         xp: rand(200, 4200),
         streak,
         bestStreak: streak + rand(0, 15),
         lastActiveDay: new Date(now - (streak ? 0 : 3) * DAY).toISOString().slice(0, 10),
+        weekKey: weekKeyOf(now),
+        weekXp: rand(0, 6) ? rand(20, 420) : 0,
       },
     });
     grantBadges(user);

@@ -34,7 +34,7 @@ test('effective streak lapses once yesterday is missed', () => {
 test('practice view reports level and daily completion', () => {
   const now = day('2026-03-10');
   const view = practiceView({ practice: { xp: 210, streak: 2, bestStreak: 5, lastActiveDay: '2026-03-09', dailyDay: '2026-03-10' } }, now);
-  assert.deepEqual(view, { xp: 210, level: 3, levelXp: 200, nextLevelXp: 450, streak: 2, bestStreak: 5, dailyDone: true });
+  assert.deepEqual(view, { xp: 210, level: 3, levelXp: 200, nextLevelXp: 450, weekXp: 0, streak: 2, bestStreak: 5, dailyDone: true });
   assert.equal(practiceView({}, now).dailyDone, false);
   assert.equal(todayKey(now), '2026-03-10');
 });
