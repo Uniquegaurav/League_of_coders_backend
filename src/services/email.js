@@ -157,7 +157,7 @@ async function weeklyRecaps(now = Date.now()) {
       subject: `Your week: ${xp} XP`,
       heading: 'Your week on League of Coders',
       lines,
-      cta: { label: 'See this week’s board', url: `${config.appUrl}/tournaments?board=xp&period=week` },
+      cta: { label: 'See this week’s board', url: `${config.appUrl}/leaderboard?board=xp&period=week` },
     }).catch((err) => console.warn('[email] weekly', err.message));
   }
 }

@@ -233,6 +233,7 @@ router.get(
     const urls = [
       { loc: '/', priority: '1.0', changefreq: 'daily' },
       { loc: '/tournaments', priority: '0.8', changefreq: 'daily' },
+      { loc: '/leaderboard', priority: '0.7', changefreq: 'daily' },
       { loc: '/practice', priority: '0.6', changefreq: 'weekly' },
       ...SEO_PAGES.map((loc) => ({ loc, priority: '0.8', changefreq: 'monthly' })),
       ...players.map((p) => ({ loc: `/u/${p.username}`, lastmod: p.updatedAt, priority: '0.5', changefreq: 'weekly' })),
