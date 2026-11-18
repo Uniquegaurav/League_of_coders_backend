@@ -2,12 +2,18 @@ import express from 'express';
 import cors from 'cors';
 import { config } from './config.js';
 import { HttpError } from './utils/http.js';
+import { leetcodeStats } from './services/leetcode.js';
 import authRoutes from './routes/auth.js';
 import userRoutes from './routes/users.js';
 import problemRoutes from './routes/problems.js';
 import matchRoutes from './routes/matches.js';
 import postRoutes from './routes/posts.js';
 import friendRoutes from './routes/friends.js';
+import challengeRoutes from './routes/challenges.js';
+import eventRoutes from './routes/events.js';
+import shareRoutes from './routes/share.js';
+import listRoutes from './routes/lists.js';
+import activityRoutes from './routes/activity.js';
 
 export function createApp() {
   const app = express();
@@ -16,7 +22,7 @@ export function createApp() {
   app.use(express.json({ limit: '1mb' }));
 
   app.get('/', (_req, res) => res.json({ name: 'League of Coders API', status: 'ok' }));
-  app.get('/health', (_req, res) => res.json({ ok: true }));
+  app.get('/health', (_req, res) => res.json({ ok: true, leetcode: leetcodeStats }));
 
   app.use('/api/auth', authRoutes);
   app.use('/api/users', userRoutes);
@@ -24,6 +30,12 @@ export function createApp() {
   app.use('/api/matches', matchRoutes);
   app.use('/api/posts', postRoutes);
   app.use('/api/friends', friendRoutes);
+  app.use('/api/challenges', challengeRoutes);
+  app.use('/api/events', eventRoutes);
+  app.use('/api/lists', listRoutes);
+  app.use('/api/activity', activityRoutes);
+  // Link previews, preview images and the sitemap (proxied from the frontend domain).
+  app.use(shareRoutes);
 
   app.use((_req, res) => res.status(404).json({ message: 'Route not found' }));
 

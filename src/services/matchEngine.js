@@ -1,5 +1,7 @@
 import Match from '../models/Match.js';
 import User from '../models/User.js';
+import Challenge from '../models/Challenge.js';
+import { battleFacts, grantBadges } from './badges.js';
 import { MATCH_LIMITS, config } from '../config.js';
 import { badRequest, conflict, forbidden, notFound, clampInt } from '../utils/http.js';
 import { roomCode } from '../utils/random.js';
@@ -50,7 +52,9 @@ export function serializeMatch(match, { withMessages = false } = {}) {
   return {
     code: match.code,
     name: match.name,
-    host: match.host.toString(),
+    host: match.host ? match.host.toString() : null,
+    event: match.event?.key ? { kind: match.event.kind, startsAt: match.event.startsAt, description: match.event.description || null } : null,
+    challengeCode: match.challengeCode || null,
     visibility: match.visibility,
     status: match.status,
     settings: match.settings,
@@ -89,7 +93,8 @@ export function summarizeMatch(match) {
     name: match.name,
     status: match.status,
     visibility: match.visibility,
-    hostName: host?.name || 'Unknown',
+    hostName: match.event?.key ? 'League of Coders' : host?.name || 'Unknown',
+    event: match.event?.key ? { kind: match.event.kind, startsAt: match.event.startsAt } : null,
     players: match.participants.filter((p) => !p.left).length,
     maxPlayers: match.settings.maxPlayers,
     settings: match.settings,
@@ -203,17 +208,19 @@ const requireLeetCode = (user) => {
 
 const findParticipant = (match, userId) => match.participants.find((p) => String(p.user) === String(userId));
 const activeParticipants = (match) => match.participants.filter((p) => !p.left);
-const isHost = (match, userId) => String(match.host) === String(userId);
+const isHost = (match, userId) => !!match.host && String(match.host) === String(userId);
 
 // ---------------------------------------------------------------------------
 // Lobby actions
 // ---------------------------------------------------------------------------
-export async function createMatch(user, input = {}) {
+export async function createMatch(user, input = {}, { challenge = null } = {}) {
   requireLeetCode(user);
   const openHosted = await Match.countDocuments({ host: user._id, status: 'lobby' });
   if (openHosted >= 3) throw conflict('You already have 3 open lobbies. Start or leave one first.');
 
   const settings = normalizeSettings(input.settings || input);
+  // A challenge attempt keeps the challenge's clock so every attempt is scored the same way.
+  if (challenge) settings.durationMin = clampInt(challenge.durationMin, MATCH_LIMITS.minDuration, MATCH_LIMITS.maxDuration, settings.durationMin);
   let code;
   for (let i = 0; i < 5 && !code; i += 1) {
     const candidate = roomCode();
@@ -227,6 +234,7 @@ export async function createMatch(user, input = {}) {
     host: user._id,
     visibility: settings.solo || input.visibility === 'private' ? 'private' : 'public',
     settings,
+    challengeCode: challenge?.code,
     participants: [participantFrom(user)],
     messages: [{ kind: 'system', text: `${user.name} created the lobby` }],
   });
@@ -272,7 +280,10 @@ export function leaveMatch(code, userId) {
       say(`${remaining[0].name} is now the host`);
     }
     if (!remaining.length) {
-      if (match.status === 'lobby') match.status = 'cancelled';
+      // Scheduled lobbies stay open until their start time even if everyone steps out.
+      if (match.status === 'lobby') {
+        if (!match.event?.key) match.status = 'cancelled';
+      }
       else finishInPlace(match, say);
     }
     return match;
@@ -298,6 +309,7 @@ export function kickParticipant(code, hostId, targetId) {
 export function updateSettings(code, userId, input) {
   return mutate(code, (match, say) => {
     if (!isHost(match, userId)) throw forbidden('Only the host can change settings');
+    if (match.challengeCode) throw badRequest('Challenge attempts use the challenge settings');
     if (match.status !== 'lobby') throw badRequest('Settings are locked once the match starts');
     match.settings = normalizeSettings(input.settings || input, match.settings.toObject());
     if (input.name !== undefined) match.name = String(input.name).trim().slice(0, 60) || match.name;
@@ -377,18 +389,29 @@ async function buildExclusions(match) {
   return slugs;
 }
 
-export async function startMatch(code, userId) {
+async function presetProblems(match) {
+  if (!match.challengeCode) return null;
+  const challenge = await Challenge.findOne({ code: match.challengeCode }).lean();
+  if (!challenge) throw notFound('That challenge no longer exists');
+  return { problems: challenge.problems, poolSize: challenge.problems.length, excludedCount: 0, reusedSolved: 0 };
+}
+
+/** Starts a lobby. `system: true` is used by the scheduler for events that have no host. */
+export async function startMatch(code, userId, { system = false } = {}) {
   // Exclusions need network calls, so gather them before taking the lock.
   const snapshot = await Match.findOne({ code });
   if (!snapshot) throw notFound('Match not found');
-  if (!isHost(snapshot, userId)) throw forbidden('Only the host can start the match');
+  if (!system && !isHost(snapshot, userId)) {
+    throw forbidden(snapshot.event?.key ? 'This battle starts automatically at its scheduled time' : 'Only the host can start the match');
+  }
   if (snapshot.status !== 'lobby') throw badRequest('Match already started');
-  const exclude = await buildExclusions(snapshot);
+  const preset = await presetProblems(snapshot);
+  const exclude = preset ? new Set() : await buildExclusions(snapshot);
 
   const match = await mutate(code, async (m, say) => {
     if (m.status !== 'lobby') throw badRequest('Match already started');
     if (!activeParticipants(m).length) throw badRequest('Nobody is in the lobby');
-    const { problems, ...selection } = await selectProblems(m.settings, exclude);
+    const { problems, ...selection } = preset || (await selectProblems(m.settings, exclude));
     m.problems = problems;
     m.selection = selection;
     m.status = 'countdown';
@@ -454,8 +477,8 @@ const everyoneDone = (match) => {
   return active.length > 0 && active.every((p) => p.solves.length >= match.problems.length);
 };
 
-async function collectAccepted(participants) {
-  const results = await Promise.allSettled(participants.map((p) => fetchRecentAccepted(p.leetcodeUsername)));
+async function collectAccepted(participants, { fresh = false } = {}) {
+  const results = await Promise.allSettled(participants.map((p) => fetchRecentAccepted(p.leetcodeUsername, { fresh })));
   return participants.map((p, i) => ({
     userId: String(p.user),
     accepted: results[i].status === 'fulfilled' ? results[i].value : null,
@@ -475,7 +498,8 @@ async function pollMatch(code, { onlyUserId = null, finalSweep = false } = {}) {
       (!onlyUserId || String(p.user) === String(onlyUserId))
   );
   if (!targets.length) return { added: [] };
-  const fetched = await collectAccepted(targets);
+  // The final sweep and manual checks never reuse a request that started before the solve.
+  const fetched = await collectAccepted(targets, { fresh: finalSweep || !!onlyUserId });
 
   let added = [];
   let finishNow = false;
@@ -584,7 +608,115 @@ async function afterFinish(match) {
     }))
   );
 
-  awardMatchXp(match, rated).catch((err) => console.error('Match XP award failed', err));
+  awardMatchXp(match, rated)
+    .then(() => awardBattleBadges(match.code))
+    .then(() => rewardReferrals(match))
+    .catch((err) => console.error('Match rewards failed', err));
+  if (match.challengeCode) recordChallengeAttempt(match).catch((err) => console.error('Challenge attempt update failed', err));
+}
+
+/** Badges earned in this battle. Reads the saved match so rating before/after is present. */
+async function awardBattleBadges(code) {
+  const match = await Match.findOne({ code });
+  if (!match) return;
+  const users = await User.find({ _id: { $in: match.participants.map((p) => p.user) } });
+  const byId = new Map(users.map((u) => [String(u._id), u]));
+  await Promise.all(
+    match.participants.map(async (p) => {
+      const user = byId.get(String(p.user));
+      if (!user) return;
+      if (grantBadges(user, battleFacts(match, p)).length) await user.save();
+    })
+  );
+}
+
+export const REFERRAL = { xp: 100, maxRewarded: 25 };
+
+/**
+ * Pays the referral reward once a referred player finishes their first battle with at least one accepted solve.
+ * Signing up alone earns nothing, so throwaway accounts cannot farm it.
+ */
+async function rewardReferrals(match) {
+  for (const p of match.participants) {
+    if (!p.solves.length) continue;
+    const user = await User.findOneAndUpdate(
+      { _id: p.user, referredBy: { $exists: true }, referralRewarded: { $ne: true } },
+      { $set: { referralRewarded: true }, $inc: { 'practice.xp': REFERRAL.xp } },
+      { new: true }
+    );
+    if (!user) continue;
+    const referrer = await User.findOneAndUpdate(
+      { _id: user.referredBy, referralCount: { $lt: REFERRAL.maxRewarded } },
+      { $inc: { referralCount: 1, 'practice.xp': REFERRAL.xp } },
+      { new: true }
+    );
+    if (referrer && grantBadges(referrer).length) await referrer.save();
+  }
+}
+
+async function recordChallengeAttempt(match) {
+  const fresh = await Match.findOne({ code: match.code }).lean();
+  const p = fresh?.participants[0];
+  if (!p) return;
+  await Challenge.updateOne(
+    { code: fresh.challengeCode, 'attempts.matchCode': fresh.code },
+    {
+      $set: {
+        'attempts.$.status': 'done',
+        'attempts.$.score': p.score,
+        'attempts.$.solved': p.solves.length,
+        'attempts.$.finishedAt': fresh.finishedAt || new Date(),
+      },
+    }
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Scheduled events (battle hour, Sunday Cup)
+// ---------------------------------------------------------------------------
+export async function createEventMatch({ key, kind, name, description, startsAt, settings, seeded = false }) {
+  let code;
+  for (let i = 0; i < 5 && !code; i += 1) {
+    const candidate = roomCode();
+    if (!(await Match.exists({ code: candidate }))) code = candidate;
+  }
+  if (!code) throw conflict('Could not allocate a room code');
+  try {
+    return await Match.create({
+      code,
+      name,
+      visibility: 'public',
+      settings: normalizeSettings(settings),
+      participants: [],
+      event: { key, kind, startsAt, description },
+      seeded: !!seeded,
+      messages: [{ kind: 'system', text: `${name} is open. It starts automatically at the scheduled time.` }],
+    });
+  } catch (err) {
+    if (err.code === 11000) return Match.findOne({ 'event.key': key });
+    throw err;
+  }
+}
+
+/** Called at an event's start time: starts it with 2+ players, otherwise closes the lobby. */
+export async function startEventMatch(code) {
+  const match = await Match.findOne({ code }).select('status participants').lean();
+  if (!match || match.status !== 'lobby') return match;
+  const close = (text) =>
+    mutate(code, (m, say) => {
+      if (m.status !== 'lobby') return m;
+      m.status = 'cancelled';
+      say(text);
+      return m;
+    });
+  if (match.participants.filter((p) => !p.left).length < 2) return close('Not enough players joined this time. See you at the next one.');
+  try {
+    return await startMatch(code, null, { system: true });
+  } catch (err) {
+    // e.g. the topic pool is too small: close the lobby instead of retrying forever.
+    console.warn(`[events] could not start ${code}:`, err.message);
+    return close(`This event could not start: ${err.message}`);
+  }
 }
 
 /** Practice XP and streaks for battle play. Best effort: never blocks or fails a finish. */

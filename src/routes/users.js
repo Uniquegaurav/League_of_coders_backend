@@ -1,15 +1,20 @@
 import { Router } from 'express';
-import mongoose from 'mongoose';
 import { randomBytes } from 'node:crypto';
 import User, { CLAIM_TTL_MS } from '../models/User.js';
 import Match from '../models/Match.js';
 import Problem from '../models/Problem.js';
 import { XP, bumpStreak, practiceView, todayKey } from '../services/progression.js';
 import { dailySlug } from '../services/daily.js';
-import { requireAuth } from '../middleware/auth.js';
+import { optionalAuth, requireAuth } from '../middleware/auth.js';
 import { asyncHandler, badRequest, clampInt, conflict, notFound } from '../utils/http.js';
 import { fetchProfile } from '../services/leetcodeProfile.js';
-import { summarizeMatch } from '../services/matchEngine.js';
+import { createMatch, summarizeMatch } from '../services/matchEngine.js';
+import Invite from '../models/Invite.js';
+import { grantBadges } from '../services/badges.js';
+import { escapeRegex, findByHandle, normalizeCollege, validateUsername } from '../services/identity.js';
+import { weekStart } from '../services/email.js';
+import { sendChallengeEmail } from '../services/email.js';
+import { emitToUser } from '../services/presence.js';
 
 const router = Router();
 const LC_USERNAME_RE = /^[a-zA-Z0-9_-]{1,40}$/;
@@ -25,12 +30,41 @@ router.patch(
   requireAuth,
   asyncHandler(async (req, res) => {
     const user = await me(req);
-    if (req.body?.name !== undefined) {
-      const name = String(req.body.name).trim();
+    const body = req.body || {};
+    if (body.name !== undefined) {
+      const name = String(body.name).trim();
       if (!name) throw badRequest('Name cannot be empty');
       user.name = name.slice(0, 60);
     }
-    await user.save();
+    if (body.username !== undefined) {
+      const { value, error } = validateUsername(body.username);
+      if (error) throw badRequest(error);
+      if (value !== user.username && (await User.exists({ username: value, _id: { $ne: user._id } }))) {
+        throw conflict('That username is taken');
+      }
+      user.username = value;
+    }
+    if (body.college !== undefined) {
+      const college = normalizeCollege(body.college);
+      if (college) {
+        // Reuse an existing spelling so "iit delhi" and "IIT Delhi" land on the same college board.
+        const same = await User.findOne({ college: { $regex: `^${escapeRegex(college)}$`, $options: 'i' } }).select('college').lean();
+        user.college = same?.college || college;
+      } else {
+        user.college = undefined;
+      }
+    }
+    if (body.emailPrefs && typeof body.emailPrefs === 'object') {
+      for (const key of ['streak', 'challenges', 'weekly']) {
+        if (typeof body.emailPrefs[key] === 'boolean') user.set(`emailPrefs.${key}`, body.emailPrefs[key]);
+      }
+    }
+    try {
+      await user.save();
+    } catch (err) {
+      if (err.code === 11000 && err.keyPattern?.username) throw conflict('That username is taken');
+      throw err;
+    }
     res.json({ user: user.toSelf() });
   })
 );
@@ -171,6 +205,7 @@ router.put(
     const has = user.solvedSlugs.includes(slug);
     let xpGained = 0;
     let daily = false;
+    let badges = [];
 
     if (solved !== has) {
       const problem = await Problem.findOne({ slug }).select('difficulty').lean();
@@ -183,6 +218,7 @@ router.put(
         if (daily) user.practice.dailyDay = today;
         xpGained = daily ? base * 2 : base;
         bumpStreak(user);
+        badges = grantBadges(user);
       } else {
         user.solvedSlugs.pull(slug);
         xpGained = -Math.min(base, user.practice.xp || 0);
@@ -192,7 +228,7 @@ router.put(
     }
 
     const practice = practiceView(user);
-    res.json({ slug, solved, xpGained, daily, leveledUp: practice.level > before.level, practice });
+    res.json({ slug, solved, xpGained, daily, leveledUp: practice.level > before.level, practice, badges });
   })
 );
 
@@ -228,22 +264,135 @@ router.get(
   })
 );
 
+const rankedFilter = { 'stats.matches': { $gt: 0 } };
+
+/** Rating gained in rated battles since Monday 00:00 UTC, per player. */
+async function weeklyStandings() {
+  return Match.aggregate([
+    { $match: { status: 'finished', finishedAt: { $gte: weekStart() }, 'participants.1': { $exists: true } } },
+    { $unwind: '$participants' },
+    {
+      $group: {
+        _id: '$participants.user',
+        gain: { $sum: { $subtract: [{ $ifNull: ['$participants.ratingAfter', 0] }, { $ifNull: ['$participants.ratingBefore', 0] }] } },
+        battles: { $sum: 1 },
+        wins: { $sum: { $cond: [{ $and: [{ $eq: ['$participants.rank', 1] }, { $gt: ['$participants.score', 0] }] }, 1, 0] } },
+        points: { $sum: '$participants.score' },
+      },
+    },
+    { $sort: { gain: -1, wins: -1, points: -1 } },
+    { $limit: 5000 },
+  ]);
+}
+
+// scope: all (rating), week (rating gained this week), friends, college (?college=Name)
 router.get(
   '/leaderboard',
+  optionalAuth,
   asyncHandler(async (req, res) => {
     const limit = clampInt(req.query.limit, 1, 100, 50);
-    const users = await User.find({ 'stats.matches': { $gt: 0 } })
-      .sort({ 'stats.rating': -1, 'stats.wins': -1 })
-      .limit(limit);
-    res.json({ players: users.map((u) => u.toPublic()) });
+    const scope = ['all', 'week', 'friends', 'college'].includes(req.query.scope) ? req.query.scope : 'all';
+    const viewer = req.userId ? await User.findById(req.userId) : null;
+
+    if (scope === 'week') {
+      const rows = await weeklyStandings();
+      const top = rows.slice(0, limit);
+      const users = await User.find({ _id: { $in: top.map((r) => r._id) } });
+      const byId = new Map(users.map((u) => [String(u._id), u]));
+      const players = top
+        .filter((r) => byId.has(String(r._id)))
+        .map((r) => ({ ...byId.get(String(r._id)).toPublic(), week: { gain: r.gain, battles: r.battles, wins: r.wins, points: r.points } }));
+      const idx = viewer ? rows.findIndex((r) => String(r._id) === String(viewer._id)) : -1;
+      const me = idx >= 0 ? { rank: idx + 1, week: { gain: rows[idx].gain, battles: rows[idx].battles, wins: rows[idx].wins, points: rows[idx].points } } : null;
+      return res.json({ scope, since: weekStart(), players, me });
+    }
+
+    if (scope === 'friends') {
+      if (!viewer) return res.json({ scope, players: [], me: null, needsLogin: true });
+      const users = await User.find({ _id: { $in: [...viewer.friends, viewer._id] } }).sort({ 'stats.rating': -1, 'stats.wins': -1 }).limit(limit);
+      const idx = users.findIndex((u) => String(u._id) === String(viewer._id));
+      return res.json({ scope, players: users.map((u) => u.toPublic()), me: idx >= 0 ? { rank: idx + 1 } : null });
+    }
+
+    const filter = { ...rankedFilter };
+    if (scope === 'college') {
+      const college = normalizeCollege(req.query.college || viewer?.college);
+      if (!college) return res.json({ scope, college: null, players: [], me: null });
+      filter.college = college;
+    }
+    const users = await User.find(filter).sort({ 'stats.rating': -1, 'stats.wins': -1 }).limit(limit);
+    let me = null;
+    if (viewer?.stats.matches > 0 && (scope === 'all' || viewer.college === filter.college)) {
+      const above = await User.countDocuments({ ...filter, 'stats.rating': { $gt: viewer.stats.rating } });
+      me = { rank: above + 1 };
+    }
+    res.json({ scope, college: filter.college || null, players: users.map((u) => u.toPublic()), me });
+  })
+);
+
+/** Colleges ranked by the average rating of their top 10 players. */
+router.get(
+  '/colleges',
+  asyncHandler(async (req, res) => {
+    const q = normalizeCollege(req.query.q);
+    if (q) {
+      // Suggestions for the profile field.
+      const names = await User.distinct('college', { college: { $regex: escapeRegex(q), $options: 'i' } });
+      return res.json({ colleges: names.slice(0, 10).map((name) => ({ name })) });
+    }
+    const rows = await User.aggregate([
+      { $match: { college: { $type: 'string' }, ...rankedFilter } },
+      { $sort: { 'stats.rating': -1 } },
+      { $group: { _id: '$college', players: { $sum: 1 }, wins: { $sum: '$stats.wins' }, ratings: { $push: '$stats.rating' } } },
+      { $project: { players: 1, wins: 1, score: { $round: [{ $avg: { $slice: ['$ratings', 10] } }, 0] } } },
+      { $sort: { score: -1, players: -1 } },
+      { $limit: 50 },
+    ]);
+    res.json({ colleges: rows.map((r, i) => ({ rank: i + 1, name: r._id, players: r.players, wins: r.wins, score: r.score })) });
+  })
+);
+
+// Direct 1v1 challenge from a profile: opens a private lobby for two and notifies the other player.
+const recentChallenges = new Map(); // userId -> timestamps
+router.post(
+  '/:id/challenge',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const target = await findByHandle(req.params.id);
+    if (!target) throw notFound('Player not found');
+    if (String(target._id) === String(req.userId)) throw badRequest('You cannot challenge yourself');
+    const hourAgo = Date.now() - 60 * 60 * 1000;
+    const mine = (recentChallenges.get(String(req.userId)) || []).filter((t) => t > hourAgo);
+    if (mine.length >= 5) throw badRequest('You have sent 5 challenges in the last hour. Try again later.');
+
+    const user = await me(req);
+    const match = await createMatch(user, {
+      name: `${user.name.split(' ')[0]} vs ${target.name.split(' ')[0]}`,
+      visibility: 'private',
+      settings: { durationMin: 30, easy: 1, medium: 1, hard: 0, maxPlayers: 2 },
+    });
+    mine.push(Date.now());
+    recentChallenges.set(String(req.userId), mine);
+    if (recentChallenges.size > 5000) {
+      for (const [id, times] of recentChallenges) if (!times.some((t) => t > hourAgo)) recentChallenges.delete(id);
+    }
+
+    const invite = await Invite.create({ from: user._id, to: target._id, matchCode: match.code });
+    emitToUser(target._id, 'invite:new', {
+      id: invite._id.toString(),
+      from: user.toPublic(),
+      match: summarizeMatch(match),
+      createdAt: invite.createdAt,
+    });
+    sendChallengeEmail(target, user, match.code).catch((err) => console.warn('[email] challenge', err.message));
+    res.status(201).json({ matchCode: match.code });
   })
 );
 
 router.get(
   '/:id',
   asyncHandler(async (req, res) => {
-    if (!mongoose.isValidObjectId(req.params.id)) throw notFound('Player not found');
-    const user = await User.findById(req.params.id);
+    const user = await findByHandle(req.params.id);
     if (!user) throw notFound('Player not found');
     const matches = await Match.find({ 'participants.user': user._id, status: 'finished' })
       .sort({ finishedAt: -1 })

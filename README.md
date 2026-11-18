@@ -71,7 +71,35 @@ Ranking: score → problems solved → earliest final solve. Battles with 2+ pla
 `/api/auth` (register, login, google, me) · `/api/users` (profile, LeetCode link/verify, solved list,
 leaderboard) · `/api/problems` (list, topics, detail) · `/api/matches` (create, open, recent, mine, stats,
 get, join, leave, settings, prefs, kick, start, end, check, messages, rematch) · `/api/posts` (feed, create,
-delete, like, comments).
+delete, like, comments) · `/api/challenges` (create from a finished match, get, attempt) · `/api/events`
+(next battle hour / Sunday Cup, past cups).
+
+`/users/leaderboard?scope=all|week|friends|college`, `/users/colleges`, and `/users/:handle/challenge` (direct 1v1).
+Profiles accept a username or an id.
+
+## Growth features
+
+- **Usernames and referrals.** Every player gets a `username` (backfilled on boot). Sign-up accepts `ref=<username>`;
+  the referrer and the new player each get 100 XP once the new player finishes a battle with at least one solve.
+- **Badges** (`services/badges.js`) are awarded after battles, practice solves and referrals.
+- **Async challenges** (`models/Challenge.js`): a finished match becomes a fixed problem set and clock that anyone can
+  attempt solo. The creator's score is recomputed as a solo run so every attempt is scored the same way.
+- **Battle hour and Sunday Cup** (`services/events.js`): a public lobby opens 30 minutes before `BATTLE_HOUR_UTC`
+  (default 15:30 UTC = 9 PM IST) and starts on its own with 2+ players. On Sundays it is the Sunday Cup.
+- **Link previews** (`routes/share.js`): `/share/*` returns Open Graph tags then redirects into the app, `/og/*.png`
+  renders the preview image (satori + resvg), `/sitemap.xml` lists public pages and profiles. The frontend proxies
+  `/s/*`, `/og/*` and `/sitemap.xml` here, so links stay on the app's domain.
+- **Emails** (`services/email.js`): streak reminders, Monday recap and 1v1 challenges through Resend. Off (dry run)
+  until `RESEND_API_KEY` is set; capped at `EMAIL_DAILY_CAP` per day; every email has a one-click unsubscribe.
+- **Problem lists** (`services/problemLists.js`): Blind 75 and NeetCode 150 (from NeetCode's public data) and LeetCode's
+  Top Interview 150, LeetCode 75 and Top 100 Liked (study plans) are synced weekly into `ProblemList`. Players can make
+  up to 20 private lists of their own (`/api/lists`).
+- **Planned tournaments** (`models/ScheduledEvent.js`): one-off events that open and run like the battle hour.
+- **Demo community** (`scripts/seedCommunity.js`): `npm run seed:community` adds 16 demo players (flagged `bot`, cannot
+  sign in, never emailed, left out of the sitemap), posts, past tournaments and planned tournaments.
+  `npm run seed:community -- --remove` deletes all of it.
+- **LeetCode rate limits** (`services/leetcode.js`): at most 4 requests in flight, retries with backoff on 429/5xx,
+  a shared cool-down after a 429, and one request for concurrent lookups of the same player. Counters are on `/health`.
 
 All writes go through REST. Sockets are push-only: clients emit `match:watch { code }` and receive
 `match:update`, `match:message` and `match:presence`.
