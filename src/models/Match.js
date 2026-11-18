@@ -59,7 +59,18 @@ const matchSchema = new mongoose.Schema(
   {
     code: { type: String, required: true, unique: true },
     name: { type: String, maxlength: 60 },
-    host: { type: ObjectId, ref: 'User', required: true },
+    // Scheduled events (battle hour, Sunday Cup) have no host: the server starts them on time.
+    host: { type: ObjectId, ref: 'User' },
+    event: {
+      key: String, // e.g. "daily-2026-11-19" or "cup-2026-11-22"; one match per key
+      kind: { type: String, enum: ['daily', 'cup', 'special'] },
+      description: String,
+      startsAt: Date,
+    },
+    // Set on a solo attempt at an async "beat my score" challenge; problems come from the challenge.
+    challengeCode: String,
+    // Demo data created by `npm run seed:community`; removed by `npm run seed:community -- --remove`.
+    seeded: { type: Boolean, default: false },
     visibility: { type: String, enum: ['public', 'private'], default: 'public' },
     status: {
       type: String,
@@ -94,5 +105,8 @@ const matchSchema = new mongoose.Schema(
 
 matchSchema.index({ status: 1, visibility: 1, createdAt: -1 });
 matchSchema.index({ 'participants.user': 1, finishedAt: -1 });
+matchSchema.index({ 'event.key': 1 }, { unique: true, partialFilterExpression: { 'event.key': { $type: 'string' } } });
+matchSchema.index({ 'event.kind': 1, finishedAt: -1 });
+matchSchema.index({ status: 1, finishedAt: -1 });
 
 export default mongoose.model('Match', matchSchema);

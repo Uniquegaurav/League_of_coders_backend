@@ -6,6 +6,9 @@ export const CLAIM_TTL_MS = 24 * 60 * 60 * 1000;
 const userSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true, maxlength: 60 },
+    // Public handle used in profile URLs (/u/:username). Lowercase letters, digits, - and _.
+    username: { type: String, lowercase: true, trim: true },
+    college: { type: String, trim: true, maxlength: 80 },
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
     password: { type: String, select: false },
     googleId: { type: String },
@@ -42,6 +45,26 @@ const userSchema = new mongoose.Schema(
       dailyDay: { type: String },
     },
     friends: { type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }], default: [] },
+    // Referrals: who brought this player in, and whether the reward was paid (after their first finished battle).
+    referredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    referralRewarded: { type: Boolean, default: false },
+    referralCount: { type: Number, default: 0 },
+    // Demo players created by `npm run seed:community` (removable with `-- --remove`). They cannot sign in.
+    bot: { type: Boolean, default: false },
+    badges: {
+      type: [{ key: String, at: { type: Date, default: Date.now }, _id: false }],
+      default: [],
+    },
+    emailPrefs: {
+      streak: { type: Boolean, default: true },
+      challenges: { type: Boolean, default: true },
+      weekly: { type: Boolean, default: true },
+    },
+    // Dedupe keys so a reminder goes out at most once per day / week.
+    lastEmails: {
+      streakDay: String,
+      weeklyKey: String,
+    },
   },
   { timestamps: true }
 );
@@ -51,17 +74,23 @@ userSchema.index(
   { unique: true, partialFilterExpression: { 'leetcode.username': { $type: 'string' } } }
 );
 userSchema.index({ 'stats.rating': -1 });
+userSchema.index({ username: 1 }, { unique: true, partialFilterExpression: { username: { $type: 'string' } } });
+userSchema.index({ college: 1, 'stats.rating': -1 });
 
 userSchema.methods.toPublic = function toPublic() {
   return {
     id: this._id.toString(),
+    username: this.username || null,
     name: this.name,
+    college: this.college || null,
     avatar: this.avatar || this.leetcode?.avatar || null,
     leetcode: this.leetcode?.username
       ? { username: this.leetcode.displayName || this.leetcode.username, verified: !!this.leetcode.verified }
       : null,
     stats: this.stats,
     practice: practiceView(this),
+    badges: (this.badges || []).map((b) => ({ key: b.key, at: b.at })),
+    referralCount: this.referralCount || 0,
     createdAt: this.createdAt,
   };
 };
@@ -79,6 +108,11 @@ userSchema.methods.toSelf = function toSelf() {
         }
       : null,
     solvedCount: this.solvedSlugs.length,
+    emailPrefs: {
+      streak: this.emailPrefs?.streak !== false,
+      challenges: this.emailPrefs?.challenges !== false,
+      weekly: this.emailPrefs?.weekly !== false,
+    },
   };
 };
 
