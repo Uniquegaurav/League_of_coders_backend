@@ -77,6 +77,17 @@ delete, like, comments) · `/api/challenges` (create from a finished match, get,
 `/users/leaderboard?scope=all|week|friends|college`, `/users/colleges`, and `/users/:handle/challenge` (direct 1v1).
 Profiles accept a username or an id.
 
+## Rating and XP
+
+- **Rating** (skill) is multiplayer Elo that only moves in official tournaments: the battle hour, the Sunday Cup and
+  planned tournaments. K is 40 for a player's first 10 tournaments, then 24, and 16 from 2000 up. Battles people host
+  themselves never change rating, so it cannot be farmed with friends or alt accounts.
+- **XP** (effort) comes from verified solves in any battle or solo test (Easy 15, Medium 30, Hard 60), a placement
+  bonus in battles with 2+ players (1st +40, top half +15), 1.5x in tournaments, practice ticks (10 / 20 / 40, problem
+  of the day x2, capped at 150 a day) and +10 for the first activity of a 3+ day streak. Weekly XP resets Monday UTC.
+- Rules live in `services/progression.js` (`XP_RULES`, `kFactor`); the leaderboard is
+  `/api/users/leaderboard?board=rating|xp&scope=global|friends|college&period=week|all`.
+
 ## Growth features
 
 - **Usernames and referrals.** Every player gets a `username` (backfilled on boot). Sign-up accepts `ref=<username>`;

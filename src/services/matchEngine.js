@@ -7,7 +7,7 @@ import { badRequest, conflict, forbidden, notFound, clampInt } from '../utils/ht
 import { roomCode } from '../utils/random.js';
 import { fetchRecentAccepted } from './leetcode.js';
 import { selectProblems } from './questionBank.js';
-import { MATCH_XP, bumpStreak } from './progression.js';
+import { addXp, battleXp, kFactor, recordActivity } from './progression.js';
 import { assignRanks, compareStanding, ratingChanges, recomputeScores } from './scoring.js';
 
 let io = null;
@@ -42,6 +42,10 @@ const problemsVisible = (match) =>
 export function serializeMessage(m) {
   return { id: m._id?.toString(), user: m.user?.toString() || null, name: m.name, kind: m.kind, text: m.text, at: m.at };
 }
+
+// Finished matches record whether they were rated. Older ones (before tournaments-only rating) were rated with 2+ players.
+const matchRated = (match) =>
+  match.status === 'finished' ? match.rated ?? match.participants.length >= 2 : !!match.event?.key;
 
 export function serializeMatch(match, { withMessages = false } = {}) {
   const online = new Set(onlineUsers(match.code));
@@ -80,7 +84,9 @@ export function serializeMatch(match, { withMessages = false } = {}) {
       rank: p.rank ?? null,
       ratingBefore: p.ratingBefore ?? null,
       ratingAfter: p.ratingAfter ?? null,
+      xp: p.xp ?? null,
     })),
+    rated: matchRated(match),
     ...(withMessages ? { messages: match.messages.map(serializeMessage) } : {}),
   };
 }
@@ -102,7 +108,8 @@ export function summarizeMatch(match) {
     endsAt: match.endsAt,
     finishedAt: match.finishedAt,
     createdAt: match.createdAt,
-    winner: winner && winner.score > 0 ? { id: String(winner.user), name: winner.name, score: winner.score } : null,
+    winner: winner && winner.score > 0 ? { id: String(winner.user), name: winner.name, avatar: winner.avatar || null, score: winner.score } : null,
+    rated: matchRated(match),
   };
 }
 
@@ -565,25 +572,35 @@ export async function finishMatch(code, { byUserId = null } = {}) {
   return match;
 }
 
-/** Updates ratings and career stats once a match is over. */
+/** True when a match moves rating: an official tournament (battle hour, Sunday Cup, planned) with 2+ players. */
+export const isRatedMatch = (match) => !!match.event?.key && match.participants.length >= 2;
+
+/**
+ * Updates rating, career stats and XP once a match is over.
+ * Rating only moves in official tournaments; every battle and solo test earns XP.
+ */
 async function afterFinish(match) {
   clearTimers(match.code);
   const ids = match.participants.map((p) => p.user);
   const users = await User.find({ _id: { $in: ids } }).select('stats');
   const byId = new Map(users.map((u) => [String(u._id), u]));
-  const rated = match.participants.length >= 2;
+  const multiplayer = match.participants.length >= 2;
+  const rated = isRatedMatch(match);
 
-  const players = match.participants.map((p) => ({
-    rating: byId.get(String(p.user))?.stats.rating ?? 1200,
-    rank: p.rank ?? match.participants.length,
-  }));
+  const players = match.participants.map((p) => {
+    const stats = byId.get(String(p.user))?.stats;
+    const rating = stats?.rating ?? 1200;
+    return { rating, rank: p.rank ?? match.participants.length, k: kFactor({ ratedEvents: stats?.ratedEvents || 0, rating }) };
+  });
   const deltas = rated ? ratingChanges(players) : players.map(() => 0);
 
   await withLock(match.code, async () => {
     const fresh = await Match.findOne({ code: match.code });
+    fresh.rated = rated;
     fresh.participants.forEach((p, i) => {
-      p.ratingBefore = players[i].rating;
-      p.ratingAfter = players[i].rating + deltas[i];
+      // Unrated battles keep no rating numbers, so nothing suggests they moved it.
+      p.ratingBefore = rated ? players[i].rating : undefined;
+      p.ratingAfter = rated ? players[i].rating + deltas[i] : undefined;
     });
     fresh.markModified('participants');
     await fresh.save();
@@ -597,10 +614,11 @@ async function afterFinish(match) {
         update: {
           $inc: {
             'stats.matches': 1,
-            'stats.wins': rated && p.rank === 1 && p.score > 0 ? 1 : 0,
+            'stats.wins': multiplayer && p.rank === 1 && p.score > 0 ? 1 : 0,
             'stats.points': p.score,
             'stats.solved': p.solves.length,
             'stats.rating': deltas[i],
+            'stats.ratedEvents': rated ? 1 : 0,
           },
           $addToSet: { solvedSlugs: { $each: p.solves.map((s) => s.slug) } },
         },
@@ -608,7 +626,7 @@ async function afterFinish(match) {
     }))
   );
 
-  awardMatchXp(match, rated)
+  awardMatchXp(match)
     .then(() => awardBattleBadges(match.code))
     .then(() => rewardReferrals(match))
     .catch((err) => console.error('Match rewards failed', err));
@@ -639,18 +657,24 @@ export const REFERRAL = { xp: 100, maxRewarded: 25 };
 async function rewardReferrals(match) {
   for (const p of match.participants) {
     if (!p.solves.length) continue;
+    // Claim the reward atomically first, so it can only ever be paid once.
     const user = await User.findOneAndUpdate(
       { _id: p.user, referredBy: { $exists: true }, referralRewarded: { $ne: true } },
-      { $set: { referralRewarded: true }, $inc: { 'practice.xp': REFERRAL.xp } },
+      { $set: { referralRewarded: true } },
       { new: true }
     );
     if (!user) continue;
+    addXp(user, REFERRAL.xp);
+    await user.save();
     const referrer = await User.findOneAndUpdate(
       { _id: user.referredBy, referralCount: { $lt: REFERRAL.maxRewarded } },
-      { $inc: { referralCount: 1, 'practice.xp': REFERRAL.xp } },
+      { $inc: { referralCount: 1 } },
       { new: true }
     );
-    if (referrer && grantBadges(referrer).length) await referrer.save();
+    if (!referrer) continue;
+    addXp(referrer, REFERRAL.xp);
+    grantBadges(referrer);
+    await referrer.save();
   }
 }
 
@@ -719,21 +743,40 @@ export async function startEventMatch(code) {
   }
 }
 
-/** Practice XP and streaks for battle play. Best effort: never blocks or fails a finish. */
-async function awardMatchXp(match, rated) {
+/** XP and streaks for battle play (see progression.XP_RULES). Best effort: never blocks or fails a finish. */
+async function awardMatchXp(match) {
   const users = await User.find({ _id: { $in: match.participants.map((p) => p.user) } });
   const byId = new Map(users.map((u) => [String(u._id), u]));
+  const difficulty = new Map(match.problems.map((p) => [p.slug, p.difficulty]));
+  const earned = new Map();
   await Promise.all(
     match.participants.map(async (p) => {
       const user = byId.get(String(p.user));
       if (!user || !p.solves.length) return;
-      const won = rated && p.rank === 1 && p.score > 0;
-      if (!user.practice) user.practice = {};
-      user.practice.xp = (user.practice.xp || 0) + p.solves.length * MATCH_XP.perSolve + (won ? MATCH_XP.win : 0);
-      bumpStreak(user);
+      const xp =
+        battleXp({
+          solves: p.solves,
+          difficultyOf: (slug) => difficulty.get(slug),
+          rank: p.rank,
+          score: p.score,
+          players: match.participants.length,
+          tournament: !!match.event?.key,
+        }) + recordActivity(user);
+      earned.set(String(p.user), addXp(user, xp));
       await user.save();
     })
   );
+  if (!earned.size) return;
+  await withLock(match.code, async () => {
+    const fresh = await Match.findOne({ code: match.code });
+    if (!fresh) return;
+    fresh.participants.forEach((p) => {
+      if (earned.has(String(p.user))) p.xp = earned.get(String(p.user));
+    });
+    fresh.markModified('participants');
+    await fresh.save();
+    io?.to(roomOf(match.code)).emit('match:update', serializeMatch(fresh));
+  });
 }
 
 export async function rematch(code, user) {

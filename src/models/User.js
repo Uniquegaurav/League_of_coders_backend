@@ -34,6 +34,8 @@ const userSchema = new mongoose.Schema(
       wins: { type: Number, default: 0 },
       points: { type: Number, default: 0 },
       solved: { type: Number, default: 0 },
+      // Official tournaments played (battle hour, Sunday Cup, planned). Only these move rating.
+      ratedEvents: { type: Number, default: 0 },
     },
     // Problems solved on this platform (matches + practice marks); powers the "exclude solved" filter.
     solvedSlugs: { type: [String], default: [] },
@@ -43,6 +45,14 @@ const userSchema = new mongoose.Schema(
       bestStreak: { type: Number, default: 0 },
       lastActiveDay: { type: String },
       dailyDay: { type: String },
+      // XP earned this week (resets on Monday UTC) and last week's total for the recap email.
+      weekKey: { type: String },
+      weekXp: { type: Number, default: 0 },
+      prevWeekKey: { type: String },
+      prevWeekXp: { type: Number, default: 0 },
+      // Daily cap on self-reported practice XP.
+      practiceXpDay: { type: String },
+      practiceXpToday: { type: Number, default: 0 },
     },
     friends: { type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }], default: [] },
     // Referrals: who brought this player in, and whether the reward was paid (after their first finished battle).
@@ -74,6 +84,8 @@ userSchema.index(
   { unique: true, partialFilterExpression: { 'leetcode.username': { $type: 'string' } } }
 );
 userSchema.index({ 'stats.rating': -1 });
+userSchema.index({ 'practice.xp': -1 });
+userSchema.index({ 'practice.weekKey': 1, 'practice.weekXp': -1 });
 userSchema.index({ username: 1 }, { unique: true, partialFilterExpression: { username: { $type: 'string' } } });
 userSchema.index({ college: 1, 'stats.rating': -1 });
 

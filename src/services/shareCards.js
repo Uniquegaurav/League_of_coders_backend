@@ -114,7 +114,8 @@ export function profileCard(user, { weekRank = null } = {}) {
 }
 
 export function resultCard(match, participant) {
-  const rated = match.participants.length >= 2;
+  const rated = match.participants.length >= 2; // multiplayer: show place
+  const ratingMoved = match.rated ?? rated;
   const rank = participant.rank || [...match.participants].sort(compareStanding).indexOf(participant) + 1;
   const delta = participant.ratingAfter != null && participant.ratingBefore != null ? participant.ratingAfter - participant.ratingBefore : null;
   const headline = !rated
@@ -143,7 +144,8 @@ export function resultCard(match, participant) {
         rated && stat('Place', ordinal(rank), rank === 1 ? C.medium : C.text),
         stat('Points', participant.score, C.brand),
         stat('Solved', `${participant.solves.length}/${match.problems.length}`, C.easy),
-        delta !== null && rated && stat('Rating', delta > 0 ? `+${delta}` : String(delta), delta >= 0 ? C.easy : C.hard)
+        delta !== null && ratingMoved && stat('Rating', delta > 0 ? `+${delta}` : String(delta), delta >= 0 ? C.easy : C.hard),
+        !(delta !== null && ratingMoved) && participant.xp ? stat('XP', `+${participant.xp}`, C.neon) : null
       )
     ),
     `${mixLabel(match.settings)} · ${match.settings.durationMin} min · think you can beat it? ${SITE}`

@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import User, { CLAIM_TTL_MS } from '../models/User.js';
 import Match from '../models/Match.js';
 import Problem from '../models/Problem.js';
-import { XP, bumpStreak, practiceView, todayKey } from '../services/progression.js';
+import { addXp, practiceView, practiceXp, recordActivity, todayKey, weekKeyOf } from '../services/progression.js';
 import { dailySlug } from '../services/daily.js';
 import { optionalAuth, requireAuth } from '../middleware/auth.js';
 import { asyncHandler, badRequest, clampInt, conflict, notFound } from '../utils/http.js';
@@ -209,21 +209,19 @@ router.put(
 
     if (solved !== has) {
       const problem = await Problem.findOne({ slug }).select('difficulty').lean();
-      const base = XP[problem?.difficulty] ?? XP.Easy;
       if (!user.practice) user.practice = {};
       if (solved) {
         user.solvedSlugs.push(slug);
         const today = todayKey();
         daily = user.practice.dailyDay !== today && slug === (await dailySlug(today));
         if (daily) user.practice.dailyDay = today;
-        xpGained = daily ? base * 2 : base;
-        bumpStreak(user);
+        const gained = practiceXp(user, problem?.difficulty, { daily, solved: true }) + recordActivity(user);
+        xpGained = addXp(user, gained);
         badges = grantBadges(user);
       } else {
         user.solvedSlugs.pull(slug);
-        xpGained = -Math.min(base, user.practice.xp || 0);
+        xpGained = addXp(user, practiceXp(user, problem?.difficulty, { solved: false }));
       }
-      user.practice.xp = (user.practice.xp || 0) + xpGained;
       await user.save();
     }
 
@@ -285,14 +283,62 @@ async function weeklyStandings() {
   ]);
 }
 
-// scope: all (rating), week (rating gained this week), friends, college (?college=Name)
+/**
+ * Two boards:
+ *   board=rating  skill. Elo from official tournaments (players who have a rating).
+ *   board=xp      effort. period=week (resets Monday UTC) or period=all.
+ * Each can be narrowed with scope=global | friends | college (&college=Name, defaults to the viewer's).
+ */
+async function boardStandings(query, viewer, limit) {
+  const board = query.board === 'xp' ? 'xp' : 'rating';
+  const period = board === 'xp' && query.period === 'week' ? 'week' : 'all';
+  const scope = ['friends', 'college'].includes(query.scope) ? query.scope : 'global';
+  const week = weekKeyOf();
+
+  const filter = {};
+  let sortField;
+  if (board === 'rating') {
+    filter.$or = [{ 'stats.ratedEvents': { $gt: 0 } }, { 'stats.matches': { $gt: 0 } }];
+    sortField = 'stats.rating';
+  } else if (period === 'week') {
+    filter['practice.weekKey'] = week;
+    filter['practice.weekXp'] = { $gt: 0 };
+    sortField = 'practice.weekXp';
+  } else {
+    filter['practice.xp'] = { $gt: 0 };
+    sortField = 'practice.xp';
+  }
+  const base = { board, period, scope, college: null };
+  if (scope === 'friends') {
+    if (!viewer) return { ...base, players: [], me: null, needsLogin: true };
+    filter._id = { $in: [...viewer.friends, viewer._id] };
+  } else if (scope === 'college') {
+    const college = normalizeCollege(query.college || viewer?.college);
+    if (!college) return { ...base, players: [], me: null };
+    filter.college = college;
+    base.college = college;
+  }
+
+  const users = await User.find(filter).sort({ [sortField]: -1, 'stats.wins': -1, _id: 1 }).limit(limit);
+  const valueOf = (u) => (board === 'rating' ? u.stats.rating : period === 'week' ? (u.practice?.weekKey === week ? u.practice.weekXp || 0 : 0) : u.practice?.xp || 0);
+  let me = null;
+  if (viewer) {
+    const mine = valueOf(viewer);
+    const qualifies = await User.exists({ ...filter, _id: viewer._id });
+    if (qualifies) me = { rank: (await User.countDocuments({ ...filter, [sortField]: { $gt: mine } })) + 1, value: mine };
+  }
+  return { ...base, players: users.map((u) => ({ ...u.toPublic(), value: valueOf(u) })), me };
+}
+
+// Legacy (no `board`): scope=all (rating), week (rating gained this week), friends, college (?college=Name)
 router.get(
   '/leaderboard',
   optionalAuth,
   asyncHandler(async (req, res) => {
     const limit = clampInt(req.query.limit, 1, 100, 50);
-    const scope = ['all', 'week', 'friends', 'college'].includes(req.query.scope) ? req.query.scope : 'all';
     const viewer = req.userId ? await User.findById(req.userId) : null;
+    if (req.query.board) return res.json(await boardStandings(req.query, viewer, limit));
+    const scope = ['all', 'week', 'friends', 'college'].includes(req.query.scope) ? req.query.scope : 'all';
 
     if (scope === 'week') {
       const rows = await weeklyStandings();
@@ -408,6 +454,7 @@ router.get(
           solved: p.solves.length,
           problems: m.problems.length,
           ratingDelta: p.ratingAfter != null && p.ratingBefore != null ? p.ratingAfter - p.ratingBefore : 0,
+          xp: p.xp ?? null,
         },
       };
     });
