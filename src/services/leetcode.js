@@ -38,7 +38,17 @@ class RetryableError extends Error {
   }
 }
 
-async function request(query, variables) {
+export class SessionError extends Error {}
+
+// `auth` ({ session, csrf }) signs the request in as that player. Only used for a Premium player's own data.
+function authHeaders(auth) {
+  if (!auth?.session) return {};
+  const cookies = [`LEETCODE_SESSION=${auth.session}`];
+  if (auth.csrf) cookies.push(`csrftoken=${auth.csrf}`);
+  return { Cookie: cookies.join('; '), ...(auth.csrf ? { 'x-csrftoken': auth.csrf } : {}) };
+}
+
+async function request(query, variables, auth) {
   const wait = coolDownUntil - Date.now();
   if (wait > 0) await sleep(wait);
   leetcodeStats.requests += 1;
@@ -48,6 +58,7 @@ async function request(query, variables) {
       'Content-Type': 'application/json',
       Referer: 'https://leetcode.com',
       'User-Agent': 'Mozilla/5.0 (LeagueOfCoders)',
+      ...authHeaders(auth),
     },
     body: JSON.stringify({ query, variables }),
     signal: AbortSignal.timeout(TIMEOUT_MS),
@@ -60,18 +71,19 @@ async function request(query, variables) {
     }
     throw new RetryableError(`LeetCode responded with ${res.status}`, retryAfter);
   }
+  if (auth && (res.status === 401 || res.status === 403)) throw new SessionError('LeetCode did not accept this session');
   if (!res.ok) throw new Error(`LeetCode responded with ${res.status}`);
   const json = await res.json();
   if (json.errors?.length) throw new Error(json.errors[0].message);
   return json.data;
 }
 
-async function gql(query, variables = {}) {
+async function gql(query, variables = {}, auth = null) {
   await acquire();
   try {
     for (let attempt = 0; ; attempt += 1) {
       try {
-        return await request(query, variables);
+        return await request(query, variables, auth);
       } catch (err) {
         const retryable = err instanceof RetryableError || err.name === 'TimeoutError' || err.cause?.code === 'ECONNRESET';
         if (!retryable || attempt >= MAX_RETRIES) {
@@ -217,4 +229,89 @@ export async function fetchStudyPlan(slug) {
     { slug }
   );
   return data.studyPlanV2Detail || null;
+}
+
+// --- Premium: a player's own LeetCode data, read with their session -----------------------------
+
+const normDifficulty = (d) => {
+  const v = String(d || '').toLowerCase();
+  return v ? v[0].toUpperCase() + v.slice(1) : v;
+};
+const toStub = (q) => ({
+  slug: q.titleSlug,
+  title: q.title,
+  frontendId: q.questionFrontendId || q.frontendId || undefined,
+  difficulty: normDifficulty(q.difficulty),
+  paidOnly: !!(q.paidOnly ?? q.isPaidOnly),
+});
+
+/** Who this session belongs to. Throws SessionError when it is not signed in. */
+export async function fetchSessionUser(auth) {
+  const data = await gql(`query { userStatus { isSignedIn isPremium username } }`, {}, auth);
+  const s = data.userStatus;
+  if (!s?.isSignedIn) throw new SessionError('This session is signed out. Copy a fresh LEETCODE_SESSION cookie.');
+  return { username: s.username, isPremium: !!s.isPremium };
+}
+
+const FAVORITE_QUESTIONS = `query($favoriteSlug: String!, $skip: Int, $limit: Int) {
+  favoriteQuestionList(favoriteSlug: $favoriteSlug, skip: $skip, limit: $limit) {
+    questions { titleSlug title difficulty paidOnly questionFrontendId }
+    totalLength
+    hasMore
+  }
+}`;
+
+/** Every question in one LeetCode favourite (a saved list, or a company list such as google-six-months). */
+export async function fetchFavoriteQuestions(auth, favoriteSlug) {
+  const out = [];
+  for (let skip = 0; skip < 5000; ) {
+    const data = await gql(FAVORITE_QUESTIONS, { favoriteSlug, skip, limit: 100 }, auth);
+    const page = data.favoriteQuestionList;
+    if (!page) break;
+    out.push(...page.questions.map(toStub));
+    skip += page.questions.length;
+    if (!page.hasMore || !page.questions.length) break;
+  }
+  return out;
+}
+
+/** The lists this player created on LeetCode, with their questions. */
+export async function fetchMyLists(auth) {
+  try {
+    const data = await gql(`query { myCreatedFavoriteList { favorites { slug name } } }`, {}, auth);
+    const favorites = data.myCreatedFavoriteList?.favorites || [];
+    const lists = [];
+    for (const f of favorites) lists.push({ id: f.slug, name: f.name, questions: await fetchFavoriteQuestions(auth, f.slug) });
+    return lists;
+  } catch (err) {
+    if (err instanceof SessionError) throw err;
+    // Older schema, still served on some accounts.
+    const data = await gql(
+      `query { favoritesLists { allFavorites { idHash name questions { titleSlug title difficulty isPaidOnly questionFrontendId } } } }`,
+      {},
+      auth
+    );
+    return (data.favoritesLists?.allFavorites || []).map((f) => ({ id: f.idHash, name: f.name, questions: f.questions.map(toStub) }));
+  }
+}
+
+export const COMPANY_PERIODS = ['thirty-days', 'three-months', 'six-months', 'more-than-six-months', 'all'];
+
+/** Questions a company asked in a period. Needs a LeetCode Premium session. */
+export async function fetchCompanyQuestions(auth, company, period = 'six-months') {
+  try {
+    return await fetchFavoriteQuestions(auth, `${company}-${period}`);
+  } catch (err) {
+    if (err instanceof SessionError) throw err;
+    // Older schema. An unknown company errors on both: report it as "no questions" rather than a failure.
+    const data = await gql(
+      `query($slug: String!) { companyTag(slug: $slug) { name questions { titleSlug title difficulty isPaidOnly questionFrontendId } } }`,
+      { slug: company },
+      auth
+    ).catch((e) => {
+      if (e instanceof SessionError) throw e;
+      return null;
+    });
+    return (data?.companyTag?.questions || []).map(toStub);
+  }
 }

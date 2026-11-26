@@ -56,8 +56,10 @@ function planGroups(plan) {
 }
 
 // Lists can mention problems the catalogue mirror has not stored yet; add minimal rows so they display.
-async function ensureProblems(stubs) {
-  const valid = stubs.filter((s) => ['Easy', 'Medium', 'Hard'].includes(s.difficulty));
+export async function ensureProblems(stubs) {
+  const valid = stubs
+    .filter((s) => s.slug && ['Easy', 'Medium', 'Hard'].includes(s.difficulty))
+    .map((s) => Object.fromEntries(Object.entries(s).filter(([, v]) => v !== undefined)));
   if (!valid.length) return;
   await Problem.bulkWrite(
     valid.map((s) => ({ updateOne: { filter: { slug: s.slug }, update: { $setOnInsert: s }, upsert: true } })),

@@ -11,7 +11,8 @@
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
     "test": "node --test test/",
-    "seed:community": "node src/scripts/seedCommunity.js"
+    "seed:community": "node src/scripts/seedCommunity.js",
+    "premium:code": "node src/scripts/premiumCode.js"
   },
   "license": "ISC",
   "dependencies": {
