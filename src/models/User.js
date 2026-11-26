@@ -3,6 +3,17 @@ import { practiceView } from '../services/progression.js';
 
 export const CLAIM_TTL_MS = 24 * 60 * 60 * 1000;
 
+/** What the player may see about their own Premium (never the session itself). */
+export function premiumView(user) {
+  const p = user.premium || {};
+  const s = p.session || {};
+  return {
+    active: !!p.active,
+    since: p.since || null,
+    leetcode: s.sealed ? { username: s.username || null, status: s.status || 'ok', checkedAt: s.checkedAt || null, syncedAt: s.syncedAt || null } : null,
+  };
+}
+
 const userSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true, maxlength: 60 },
@@ -36,6 +47,21 @@ const userSchema = new mongoose.Schema(
       solved: { type: Number, default: 0 },
       // Official tournaments played (battle hour, Sunday Cup, planned). Only these move rating.
       ratedEvents: { type: Number, default: 0 },
+    },
+    // Premium: unlocked with a code. The LeetCode session is stored encrypted (services/secretBox.js), is never sent
+    // back to any client, and is only used to fetch this player's own lists and company lists.
+    premium: {
+      active: { type: Boolean, default: false },
+      since: Date,
+      code: { type: mongoose.Schema.Types.ObjectId, ref: 'PremiumCode' },
+      session: {
+        sealed: String,
+        csrfSealed: String,
+        username: String,
+        status: { type: String, enum: ['ok', 'expired'] },
+        checkedAt: Date,
+        syncedAt: Date,
+      },
     },
     // Problems solved on this platform (matches + practice marks); powers the "exclude solved" filter.
     solvedSlugs: { type: [String], default: [] },
@@ -120,6 +146,7 @@ userSchema.methods.toSelf = function toSelf() {
         }
       : null,
     solvedCount: this.solvedSlugs.length,
+    premium: premiumView(this),
     emailPrefs: {
       streak: this.emailPrefs?.streak !== false,
       challenges: this.emailPrefs?.challenges !== false,
