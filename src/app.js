@@ -15,6 +15,7 @@ import shareRoutes from './routes/share.js';
 import listRoutes from './routes/lists.js';
 import activityRoutes from './routes/activity.js';
 import premiumRoutes from './routes/premium.js';
+import runRoutes from './routes/run.js';
 
 export function createApp() {
   const app = express();
@@ -36,6 +37,7 @@ export function createApp() {
   app.use('/api/lists', listRoutes);
   app.use('/api/activity', activityRoutes);
   app.use('/api/premium', premiumRoutes);
+  app.use('/api/run', runRoutes);
   // Link previews, preview images and the sitemap (proxied from the frontend domain).
   app.use(shareRoutes);
 
